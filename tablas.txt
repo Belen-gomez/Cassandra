@@ -1,0 +1,94 @@
+//Cluster
+sudo ifconfig lo:4 127.0.0.5 up 
+sudo ifconfig lo:5 127.0.0.6 up 
+
+cd cassandra
+ccm create dgt -n 5 --vnode -v 4.0.0
+ccm node1 remove
+ccm add node1 -i 127.0.0.6 -j 7600 -b 
+para conectarse a los nodos: ccm node1 cqlsh (o cualquier nodo)
+
+//Tablas
+
+CREATE KEYSPACE IF NOT EXISTS operativa WITH REPLICATION = {'class': 'SimpleStrategy', 'replication_factor': 3};
+
+ALTER KEYSPACE operativa WITH REPLICATION = { 'class': 'SimpleStrategy', 'replication_factor': 1 };
+
+CREATE TABLE registro_rc (nombre_carretera text, limite_carretera int, km_radar int, dir_radar text, limite_radar int, velocidad int, id int, archivo text, fecha date, tiempo time, matricula text, PRIMARY KEY(nombre_carretera, id)); 
+
+CREATE TABLE vehiculo (matricula text, marca text, modelo text, power int, color text, numero_chasis text, fecha_matriculacion text, dni_dueno text, dni_conductor text, PRIMARY KEY(marca, matricula));
+
+CREATE TABLE revisiones (fecha date, fallos list<text>, matricula text, PRIMARY KEY(matricula, fecha));
+
+CREATE TABLE sancion (id int, fecha date, cantidad int, moneda text, type text, paydate date, paytype text, estado text, dni_deudor text, PRIMARY KEY(estado, id));
+
+CREATE TABLE dueno (dni text, nombre text, apellido1 text, apellido2 text, dir text, ciudad text, tel int, correo text, fecha_nacimiento date, PRIMARY KEY(ciudad, dni));
+
+CREATE TABLE conductor (dni text, nombre text, apellido1 text, apellido2 text, dir text, ciudad text, tel int, correo text, fecha_nacimiento date, fecha_carnet date, tipo_carnet text, PRIMARY KEY(ciudad, dni));
+
+CREATE TABLE deudor (dni text, nombre text, apellido1 text, apellido2 text, dir text, ciudad text, tel int, correo text, fecha_nacimiento date, insolvente boolean, PRIMARY KEY(ciudad, dni));
+
+//pyspark
+pyspark --packages com.datastax.spark:spark-cassandra-connector_2.12:3.1.0
+
+from pyspark.sql import SparkSession
+# Configura Spark para conectar con Cassandra
+spark = SparkSession.builder \
+ .appName("CassandraDataInsert") \
+ .config("spark.cassandra.connection.host", "127.0.0.6") \
+ .getOrCreate()
+
+json_file = "/home/lab/sample_limpio (3).json"
+data_df = spark.read.json(json_file, multiLine=True)
+data_df.printSchema()
+
+
+from pyspark.sql.functions import col, to_date
+
+registro_df = data_df.select(col("road.name").alias("nombre_carretera"), col("road.speed limit").alias("limite_carretera"), col("radar.mileage").alias("km_radar"),
+	col("radar.direction").alias("dir_radar"), col("radar.speed limit").alias("limite_radar"), col("Record.speed").alias("velocidad"), col("Record.rec_ID").alias("id"), 
+	col("Record.file").alias("archivo"), col("Record.date").alias("fecha"), col("Record.time").alias("tiempo"), col("vehicle.number plate").alias("matricula"))
+
+registro_df.write \
+    .format("org.apache.spark.sql.cassandra") \
+    .options(table="registro_rc", keyspace="operativa") \
+    .mode("append") \
+    .save()
+
+vehiculo_df = data_df.select(col("vehicle.number plate").alias("matricula"), col("vehicle.make").alias("marca"), col("vehicle.model").alias("modelo"),
+	col("vehicle.power").alias("power"), col("vehicle.colour").alias("color"), col("vehicle.chassis number").alias("numero_chasis"), col("vehicle.registry date").alias("fecha_matriculacion"), 
+	col("vehicle.Owner.DNI").alias("dni_dueno"), col("vehicle.Driver.DNI").alias("dni_conductor"))
+
+
+vehiculo_df.write \
+    .format("org.apache.spark.sql.cassandra") \
+    .options(table="vehiculo", keyspace="operativa") \
+    .mode("append") \
+    .save()
+
+revisiones_df = data_df.select(col(".").alias("fecha"), col("vehicle.make").alias("fallos"), col("vehicle.model").alias("matricula"))
+
+revisiones_df.write \
+    .format("org.apache.spark.sql.cassandra") \
+    .options(table="revisiones", keyspace="operativa") \
+    .mode("append") \
+    .save()
+
+dueno_df = data_df.select(col("vehicle.Owner.DNI").alias("dni"), col("vehicle.Owner.Name").alias("nombre"), col("vehicle.Owner.Surname").alias("apellido1"),
+	col("vehicle.Owner.Sec_Surname").alias("apellido2"), col("vehicle.Owner.Address").alias("dir"), col("vehicle.Owner.Town").alias("ciudad"), col("vehicle.Owner.Phone number").alias("tel"),col("vehicle.Owner.Email").alias("correo"), col("vehicle.Owner.Birthdate").alias("fecha_nacimiento"))
+
+dueno_df.write \
+    .format("org.apache.spark.sql.cassandra") \
+    .options(table="dueno", keyspace="operativa") \
+    .mode("append") \
+    .save()
+
+conductor_df = data_df.select(col("vehicle.Driver.DNI").alias("dni"), col("vehicle.Driver.Name").alias("nombre"), col("vehicle.Driver.Surname").alias("apellido1"),
+	col("vehicle.Driver.Sec_Surname").alias("apellido2"), col("vehicle.Driver.Address").alias("dir"), col("vehicle.Driver.Town").alias("ciudad"), col("vehicle.Driver.Phone number").alias("tel"),col("vehicle.Driver.Email").alias("correo"), col("vehicle.Driver.Birthdate").alias("fecha_nacimiento"), col("vehicle.Driver.driving license.type").alias("tipo_carnet"), col("vehicle.Driver.driving license.date").alias("fecha_carnet"))
+
+
+conductor_df.write \
+    .format("org.apache.spark.sql.cassandra") \
+    .options(table="conductor", keyspace="operativa") \
+    .mode("append") \
+    .save()
